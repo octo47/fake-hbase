@@ -37,7 +37,8 @@ object Tests {
 
   val defaultSettings = Seq(
     parallelExecution in Test := false,
-    publishTo    := Some(Resolver.file("octo47.github.com", file(Path.userHome + "/Projects/github/octo47.github.com/repo")))
+    publishTo    := Some(Resolver.file("octo47.github.com", file(Path.userHome + "/Projects/github/octo47.github.com/repo"))),
+    publishMavenStyle := false
   )
 }
 
