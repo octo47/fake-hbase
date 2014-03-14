@@ -40,37 +40,18 @@ import scala.util.control.Breaks.break
 import scala.util.control.Breaks.breakable
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.hbase.HColumnDescriptor
-import org.apache.hadoop.hbase.HConstants
-import org.apache.hadoop.hbase.HRegionInfo
-import org.apache.hadoop.hbase.HRegionLocation
-import org.apache.hadoop.hbase.HTableDescriptor
-import org.apache.hadoop.hbase.KeyValue
-import org.apache.hadoop.hbase.ServerName
-import org.apache.hadoop.hbase.client.Append
-import org.apache.hadoop.hbase.client.Delete
-import org.apache.hadoop.hbase.client.Get
-import org.apache.hadoop.hbase.client.HTableInterface
-import org.apache.hadoop.hbase.client.Increment
-import org.apache.hadoop.hbase.client.Put
-import org.apache.hadoop.hbase.client.Result
-import org.apache.hadoop.hbase.client.ResultScanner
-import org.apache.hadoop.hbase.client.RowLock
-import org.apache.hadoop.hbase.client.RowMutations
-import org.apache.hadoop.hbase.client.Scan
-import org.apache.hadoop.hbase.client.coprocessor.Batch
+import org.apache.hadoop.hbase._
+import org.apache.hadoop.hbase.client._
+import java.lang
+import org.apache.hadoop.hbase.client.coprocessor.Batch.{Call, Callback}
+import scala.Some
+import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel
+import com.google.protobuf.Service
 import org.apache.hadoop.hbase.filter.Filter
-import org.apache.hadoop.hbase.ipc.CoprocessorProtocol
 import org.apache.hadoop.hbase.util.Bytes
-import org.apache.hadoop.io.WritableUtils
-import org.kiji.testing.fakehtable.JNavigableMapWithAsScalaIterator.javaNavigableMapAsScalaIterator
 import org.slf4j.LoggerFactory
 
-import org.apache.hadoop.hbase.client.Row
-import org.apache.hadoop.hbase.HBaseConfiguration
-
-// import org.apache.hadoop.hbase.client.Row
-// import org.apache.hadoop.hbase.HBaseConfiguration
+import org.kiji.testing.fakehtable.JNavigableMapWithAsScalaIterator.javaNavigableMapAsScalaIterator
 
 /**
  * Fake in-memory HTable.
@@ -97,6 +78,9 @@ class FakeHTable(
 
   /** Whether the table has been closed. */
   private var closed: Boolean = false
+
+  /** A fake connection. */
+  private val connection: FakeHConnection = new FakeHConnection()
 
   /** Region splits and locations. */
   private var regions: Seq[HRegionLocation] = Seq()
@@ -139,6 +123,8 @@ class FakeHTable(
     return name.getBytes
   }
 
+  override def getName: TableName = TableName.valueOf(name)
+
   override def getConfiguration(): Configuration = {
     return conf
   }
@@ -149,6 +135,10 @@ class FakeHTable(
 
   override def exists(get: Get): Boolean = {
     return !this.get(get).isEmpty()
+  }
+
+  override def exists(gets: JList[Get]): Array[lang.Boolean] = {
+    gets.asScala.map(get => exists(get).asInstanceOf[lang.Boolean]).toArray
   }
 
   override def append(append: Append): Result = {
@@ -232,6 +222,11 @@ class FakeHTable(
     }
     return results.toArray
   }
+
+  override def batchCallback[R](actions: JList[_ <: Row], results: Array[AnyRef], callback: Callback[R]): Unit = ???
+
+  override def batchCallback[R](actions: JList[_ <: Row], callback: Callback[R]): Array[AnyRef] = ???
+
 
   override def get(get: Get): Result = {
     // get() could be built around scan(), to ensure consistent filters behavior.
@@ -495,7 +490,7 @@ class FakeHTable(
           .getOrElseUpdate(rowKey, new JTreeMap[Bytes, FamilyQualifiers](BytesComparator))
       val familyMap = new JTreeMap[Bytes, NavigableSet[Bytes]](BytesComparator)
 
-      for ((family, qualifierMap) <- increment.getFamilyMap.asScala) {
+      for ((family, qualifierMap) <- increment.getFamilyMapOfLongs.asScala) {
         val qualifierSet = familyMap.asScala
             .getOrElseUpdate(family, new JTreeSet[Bytes](BytesComparator))
         val rowQualifierMap = row.asScala
@@ -552,6 +547,9 @@ class FakeHTable(
     return Bytes.toLong(result.getValue(family, qualifier))
   }
 
+  override def incrementColumnValue(row: Array[Byte], family: Array[Byte], qualifier: Array[Byte], amount: Long, durability: Durability): Long =
+    incrementColumnValue(row, family, qualifier, amount)
+
   override def mutateRow(mutations: RowMutations): Unit = {
     synchronized {
       for (mutation <- mutations.getMutations.asScala) {
@@ -593,39 +591,13 @@ class FakeHTable(
     this.closed = true
   }
 
-  override def lockRow(row: Bytes): RowLock = {
-    sys.error("Not implemented")
-  }
+  override def coprocessorService(row: Array[Byte]): CoprocessorRpcChannel = ???
 
-  override def unlockRow(lock: RowLock): Unit = {
-    sys.error("Not implemented")
-  }
+  override def coprocessorService[T <: Service, R](service: Class[T], startKey: Array[Byte], endKey: Array[Byte], callable: Call[T, R], callback: Callback[R]): Unit = ???
 
-  override def coprocessorProxy[T <: CoprocessorProtocol](
-      protocol: Class[T],
-      row: Bytes
-  ): T = {
-    sys.error("Coprocessor not implemented")
-  }
+  override def coprocessorService[T <: Service, R](service: Class[T], startKey: Array[Byte], endKey: Array[Byte], callable: Call[T, R]): JMap[Array[Byte], R] = ???
 
-  override def coprocessorExec[T <: CoprocessorProtocol, R](
-      protocol: Class[T],
-      startKey: Bytes,
-      endKey: Bytes,
-      callable: Batch.Call[T, R]
-  ): JMap[Bytes, R] = {
-    sys.error("Coprocessor not implemented")
-  }
-
-  override def coprocessorExec[T <: CoprocessorProtocol, R](
-      protocol: Class[T],
-      startKey: Bytes,
-      endKey: Bytes,
-      callable: Batch.Call[T, R],
-      callback: Batch.Callback[R]
-  ): Unit = {
-    sys.error("Coprocessor not implemented")
-  }
+  override def setAutoFlushTo(autoFlush: Boolean): Unit = {}
 
   // -----------------------------------------------------------------------------------------------
 
@@ -665,9 +637,11 @@ class FakeHTable(
 
     val newRegions = Buffer[HRegionLocation]()
     for ((start, end) <- toRegions(split)) {
-      val fakeHost = "fake-location-%d".format(newRegions.size)
-      val regionInfo = new HRegionInfo(tableName, start, end)
-      newRegions += new HRegionLocation(regionInfo, fakeHost, fakePort)
+      val serverId: Int = newRegions.size
+      val fakeHost = "fake-location-%d".format(serverId)
+      val regionInfo = new HRegionInfo(HRegionInfo.getTable(tableName), start, end)
+      val serverName = ServerName.valueOf(fakeHost, fakePort, serverId)
+      newRegions += new HRegionLocation(regionInfo, serverName)
     }
     this.regions = newRegions.toSeq
   }
@@ -731,6 +705,8 @@ class FakeHTable(
     return regionList
   }
 
+  /** See HTable.getConnection(). */
+  def getConnection: HConnection = connection
   // -----------------------------------------------------------------------------------------------
 
   def toHex(bytes: Bytes): String = {
@@ -773,7 +749,11 @@ class FakeHTable(
    */
   private def getFilter(filterSpec: Filter): Filter = {
     Option(filterSpec) match {
-      case Some(hfilter) => WritableUtils.clone(hfilter, conf)
+      case Some(hfilter) =>
+        val clazz = filterSpec.getClass
+        val bytes = filterSpec.toByteArray
+        val deserializer = clazz.getMethod("parseFrom", classOf[Array[Byte]])
+        deserializer.invoke(null, bytes).asInstanceOf[Filter]
       case None => PassThroughFilter
     }
   }
@@ -845,7 +825,7 @@ class FakeHTable(
       }
     }
     if (!scan.getStopRow.isEmpty
-       && (BytesComparator.compare(key, scan.getStopRow) >= 0)) {
+       && (key == null || BytesComparator.compare(key, scan.getStopRow) >= 0)) {
       key = null
     }
 

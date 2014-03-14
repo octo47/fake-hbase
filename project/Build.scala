@@ -1,6 +1,5 @@
 import sbt._
 import sbt.ExclusionRule
-import sbt.ExclusionRule
 import sbt.Keys._
 import net.virtualvoid.sbt.graph.{Plugin => Dep}
 import scala._
@@ -71,16 +70,17 @@ object HBase {
 
   import Util._
 
-  val Hadoop = "2.0.0-cdh4.3.1"
-  val HBase = "0.94.6-cdh4.3.1"
+  val Hadoop = "2.2.0-cdh5.0.0-beta-2"
+  val HBase = "0.96.1.1-cdh5.0.0-beta-2"
 
   val settings = Seq(
     resolvers ++= Seq(
-      "cdh4.3.1" at "https://repository.cloudera.com/artifactory/cloudera-repos"
+      "cloudera" at "http://repository.cloudera.com/artifactory/cloudera-repos"
     ),
     libraryDependencies ++= Seq(
       "org.apache.hadoop" % "hadoop-common" % Hadoop,
-      "org.apache.hbase" % "hbase" % HBase
+      "org.apache.hbase" % "hbase-client" % HBase,
+      "org.apache.hbase" % "hbase-common" % HBase
     ).excluding(
       ExclusionRule(name = "commons-daemon"),
       ExclusionRule(name = "commons-cli"),
@@ -110,7 +110,7 @@ object FakeHBaseBuild extends Build {
       Tests.defaultSettings ++
       Dep.graphSettings ++ Seq(
         organization in ThisBuild := "org.kiji.testing", 
-	version in ThisBuild := "0.1.2",
+	version in ThisBuild := "0.96-0.1.5",
 	scalaVersion in ThisBuild := Version.Scala
       )
 
